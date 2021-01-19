@@ -1,6 +1,6 @@
 from copy import copy
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Union
 
 from django.core.handlers.wsgi import WSGIRequest
 from django.http import HttpResponse
@@ -10,6 +10,7 @@ from prices import Money, MoneyRange, TaxedMoney, TaxedMoneyRange
 from ..payment.interface import (
     CustomerSource,
     GatewayResponse,
+    InitializedPaymentResponse,
     PaymentData,
     PaymentGateway,
 )
@@ -17,13 +18,21 @@ from .models import PluginConfiguration
 
 if TYPE_CHECKING:
     # flake8: noqa
-    from ..core.taxes import TaxType
-    from ..checkout.models import Checkout, CheckoutLine
-    from ..discount import DiscountInfo
-    from ..product.models import Product, ProductType
     from ..account.models import Address, User
-    from ..order.models import Fulfillment, OrderLine, Order
+    from ..channel.models import Channel
+    from ..checkout import CheckoutLineInfo
+    from ..checkout.models import Checkout, CheckoutLine
+    from ..core.taxes import TaxType
+    from ..discount import DiscountInfo
     from ..invoice.models import Invoice
+    from ..order.models import Fulfillment, Order, OrderLine
+    from ..product.models import (
+        Collection,
+        Product,
+        ProductType,
+        ProductVariant,
+        ProductVariantChannelListing,
+    )
 
 
 PluginConfigurationType = List[dict]
@@ -33,12 +42,14 @@ class ConfigurationTypeField:
     STRING = "String"
     BOOLEAN = "Boolean"
     SECRET = "Secret"
+    SECRET_MULTILINE = "SecretMultiline"
     PASSWORD = "Password"
     CHOICES = [
         (STRING, "Field is a String"),
         (BOOLEAN, "Field is a Boolean"),
         (SECRET, "Field is a Secret"),
         (PASSWORD, "Field is a Password"),
+        (SECRET_MULTILINE, "Field is a Secret multiline"),
     ]
 
 
@@ -83,7 +94,8 @@ class BasePlugin:
     def calculate_checkout_total(
         self,
         checkout: "Checkout",
-        lines: List["CheckoutLine"],
+        lines: List["CheckoutLineInfo"],
+        address: Optional["Address"],
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -97,7 +109,8 @@ class BasePlugin:
     def calculate_checkout_subtotal(
         self,
         checkout: "Checkout",
-        lines: List["CheckoutLine"],
+        lines: List["CheckoutLineInfo"],
+        address: Optional["Address"],
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -111,7 +124,8 @@ class BasePlugin:
     def calculate_checkout_shipping(
         self,
         checkout: "Checkout",
-        lines: List["CheckoutLine"],
+        lines: List["CheckoutLineInfo"],
+        address: Optional["Address"],
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -132,9 +146,17 @@ class BasePlugin:
         """
         return NotImplemented
 
+    # TODO: Add information about this change to `breaking changes in changelog`
     def calculate_checkout_line_total(
         self,
+        checkout: "Checkout",
         checkout_line: "CheckoutLine",
+        variant: "ProductVariant",
+        product: "Product",
+        collections: List["Collection"],
+        address: Optional["Address"],
+        channel: "Channel",
+        channel_listing: "ProductVariantChannelListing",
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -143,6 +165,12 @@ class BasePlugin:
         Overwrite this method if you need to apply specific logic for the calculation
         of a checkout line total. Return TaxedMoney.
         """
+        return NotImplemented
+
+    def calculate_checkout_line_unit_price(
+        self, total_line_price: TaxedMoney, quantity: int, previous_value: TaxedMoney
+    ):
+        """Calculate checkout line unit price."""
         return NotImplemented
 
     def calculate_order_line_unit(
@@ -155,6 +183,38 @@ class BasePlugin:
         Overwrite this method if you need to apply specific logic for the calculation
         of an order line unit price.
         """
+        return NotImplemented
+
+    def get_checkout_line_tax_rate(
+        self,
+        checkout: "Checkout",
+        checkout_line_info: "CheckoutLineInfo",
+        address: Optional["Address"],
+        discounts: Iterable["DiscountInfo"],
+        previous_value: Decimal,
+    ) -> Decimal:
+        return NotImplemented
+
+    def get_order_line_tax_rate(
+        self,
+        order: "Order",
+        product: "Product",
+        address: Optional["Address"],
+        previous_value: Decimal,
+    ) -> Decimal:
+        return NotImplemented
+
+    def get_checkout_shipping_tax_rate(
+        self,
+        checkout: "Checkout",
+        lines: Iterable["CheckoutLineInfo"],
+        address: Optional["Address"],
+        discounts: Iterable["DiscountInfo"],
+        previous_value: Decimal,
+    ):
+        return NotImplemented
+
+    def get_order_shipping_tax_rate(self, order: "Order", previous_value: Decimal):
         return NotImplemented
 
     def get_tax_rate_type_choices(
@@ -227,6 +287,14 @@ class BasePlugin:
         """
         return NotImplemented
 
+    def order_confirmed(self, order: "Order", previous_value: Any):
+        """Trigger when order is confirmed by staff.
+
+        Overwrite this method if you need to trigger specific logic after an order is
+        confirmed.
+        """
+        return NotImplemented
+
     def invoice_request(
         self,
         order: "Order",
@@ -253,7 +321,10 @@ class BasePlugin:
         return NotImplemented
 
     def assign_tax_code_to_object_meta(
-        self, obj: Union["Product", "ProductType"], tax_code: str, previous_value: Any
+        self,
+        obj: Union["Product", "ProductType"],
+        tax_code: Optional[str],
+        previous_value: Any,
     ):
         """Assign tax code dedicated to plugin."""
         return NotImplemented
@@ -365,6 +436,11 @@ class BasePlugin:
         """Triggered when ShopFetchTaxRates mutation is called."""
         return NotImplemented
 
+    def initialize_payment(
+        self, payment_data: dict, previous_value
+    ) -> "InitializedPaymentResponse":
+        return NotImplemented
+
     def authorize_payment(
         self, payment_information: "PaymentData", previous_value
     ) -> "GatewayResponse":
@@ -429,7 +505,9 @@ class BasePlugin:
         )
 
     def get_payment_gateway_for_checkout(
-        self, checkout: "Checkout", previous_value,
+        self,
+        checkout: "Checkout",
+        previous_value,
     ) -> Optional["PaymentGateway"]:
         return self.get_payment_gateway(checkout.currency, previous_value)
 
@@ -512,21 +590,28 @@ class BasePlugin:
 
     @classmethod
     def _update_configuration_structure(cls, configuration: PluginConfigurationType):
+        updated_configuration = []
         config_structure = getattr(cls, "CONFIG_STRUCTURE") or {}
         desired_config_keys = set(config_structure.keys())
+        for config_field in configuration:
+            if config_field["name"] not in desired_config_keys:
+                continue
+            updated_configuration.append(config_field)
 
-        configured_keys = set(d["name"] for d in configuration)
+        configured_keys = set(d["name"] for d in updated_configuration)
         missing_keys = desired_config_keys - configured_keys
 
         if not missing_keys:
-            return
+            return updated_configuration
 
         default_config = cls.DEFAULT_CONFIGURATION
         if not default_config:
-            return
+            return updated_configuration
 
         update_values = [copy(k) for k in default_config if k["name"] in missing_keys]
-        configuration.extend(update_values)
+        if update_values:
+            updated_configuration.extend(update_values)
+        return updated_configuration
 
     @classmethod
     def get_default_active(cls):
@@ -537,7 +622,7 @@ class BasePlugin:
     ) -> PluginConfigurationType:
         if not configuration:
             configuration = []
-        self._update_configuration_structure(configuration)
+        configuration = self._update_configuration_structure(configuration)
         if configuration:
             # Let's add a translated descriptions and labels
             self._append_config_structure(configuration)

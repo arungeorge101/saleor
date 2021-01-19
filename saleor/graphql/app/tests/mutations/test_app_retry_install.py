@@ -49,7 +49,10 @@ def test_retry_install_app_mutation(
         "id": id,
         "activate_after_installation": True,
     }
-    response = staff_api_client.post_graphql(query, variables=variables,)
+    response = staff_api_client.post_graphql(
+        query,
+        variables=variables,
+    )
     content = get_graphql_content(response)
     app_installation = AppInstallation.objects.get()
     app_installation_data = content["data"]["appRetryInstall"]["appInstallation"]
@@ -82,7 +85,10 @@ def test_retry_install_app_mutation_by_app(
         "id": id,
         "activate_after_installation": False,
     }
-    response = app_api_client.post_graphql(query, variables=variables,)
+    response = app_api_client.post_graphql(
+        query,
+        variables=variables,
+    )
     content = get_graphql_content(response)
     app_installation = AppInstallation.objects.get()
     app_installation_data = content["data"]["appRetryInstall"]["appInstallation"]
@@ -93,16 +99,22 @@ def test_retry_install_app_mutation_by_app(
     mocked_task.assert_called_with(app_installation.pk, False)
 
 
-def test_retry_install_app_mutation_missing_required_permissions(
+def test_retry_install_app_mutation_app_has_more_permission_than_user_requestor(
     permission_manage_apps,
     staff_api_client,
     staff_user,
     app_installation,
     permission_manage_orders,
+    monkeypatch,
 ):
     app_installation.status = JobStatus.FAILED
     app_installation.permissions.add(permission_manage_orders)
     app_installation.save()
+
+    mocked_task = Mock()
+    monkeypatch.setattr(
+        "saleor.graphql.app.mutations.install_app_task.delay", mocked_task
+    )
 
     query = RETRY_INSTALL_APP_MUTATION
 
@@ -112,41 +124,65 @@ def test_retry_install_app_mutation_missing_required_permissions(
     variables = {
         "id": id,
     }
-    response = staff_api_client.post_graphql(query, variables=variables,)
+    response = staff_api_client.post_graphql(
+        query,
+        variables=variables,
+    )
     content = get_graphql_content(response)
     data = content["data"]["appRetryInstall"]
 
     errors = data["appErrors"]
-    assert not data["appInstallation"]
-    assert len(errors) == 1
-    error = errors[0]
-    assert error["field"] == "id"
-    assert error["code"] == AppErrorCode.OUT_OF_SCOPE_APP.name
+    assert not errors
+
+    app_installation = AppInstallation.objects.get()
+    app_installation_data = content["data"]["appRetryInstall"]["appInstallation"]
+    _, app_id = graphene.Node.from_global_id(app_installation_data["id"])
+    assert int(app_id) == app_installation.id
+    assert app_installation_data["status"] == JobStatus.PENDING.upper()
+    assert app_installation_data["manifestUrl"] == app_installation.manifest_url
+    mocked_task.assert_called_with(app_installation.pk, True)
 
 
-def test_retry_install_app_mutation_by_app_missing_required_permissions(
-    permission_manage_apps, app_api_client, app_installation, permission_manage_orders
+def test_retry_install_app_mutation_app_has_more_permission_than_app_requestor(
+    permission_manage_apps,
+    app_api_client,
+    app_installation,
+    permission_manage_orders,
+    monkeypatch,
 ):
     app_installation.status = JobStatus.FAILED
     app_installation.permissions.add(permission_manage_orders)
     app_installation.save()
+
+    mocked_task = Mock()
+    monkeypatch.setattr(
+        "saleor.graphql.app.mutations.install_app_task.delay", mocked_task
+    )
+
     query = RETRY_INSTALL_APP_MUTATION
     app_api_client.app.permissions.set([permission_manage_apps])
     id = graphene.Node.to_global_id("AppInstallation", app_installation.id)
     variables = {
         "id": id,
     }
-    response = app_api_client.post_graphql(query, variables=variables,)
+    response = app_api_client.post_graphql(
+        query,
+        variables=variables,
+    )
 
     content = get_graphql_content(response)
     data = content["data"]["appRetryInstall"]
 
     errors = data["appErrors"]
-    assert not data["appInstallation"]
-    assert len(errors) == 1
-    error = errors[0]
-    assert error["field"] == "id"
-    assert error["code"] == AppErrorCode.OUT_OF_SCOPE_APP.name
+    assert not errors
+
+    app_installation = AppInstallation.objects.get()
+    app_installation_data = content["data"]["appRetryInstall"]["appInstallation"]
+    _, app_id = graphene.Node.from_global_id(app_installation_data["id"])
+    assert int(app_id) == app_installation.id
+    assert app_installation_data["status"] == JobStatus.PENDING.upper()
+    assert app_installation_data["manifestUrl"] == app_installation.manifest_url
+    mocked_task.assert_called_with(app_installation.pk, True)
 
 
 def test_cannot_retry_installation_if_status_is_different_than_failed(
@@ -171,7 +207,10 @@ def test_cannot_retry_installation_if_status_is_different_than_failed(
         "id": id,
         "activate_after_installation": True,
     }
-    response = staff_api_client.post_graphql(query, variables=variables,)
+    response = staff_api_client.post_graphql(
+        query,
+        variables=variables,
+    )
     content = get_graphql_content(response)
 
     AppInstallation.objects.get()

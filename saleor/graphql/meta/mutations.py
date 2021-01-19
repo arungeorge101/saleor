@@ -1,9 +1,15 @@
+from typing import List
+
 import graphene
 from django.core.exceptions import ValidationError
 
 from ...core import models
 from ...core.error_codes import MetadataErrorCode
 from ...core.exceptions import PermissionDenied
+from ...menu import models as menu_models
+from ...product import models as product_models
+from ...shipping import models as shipping_models
+from ..channel import ChannelContext
 from ..core.mutations import BaseMutation
 from ..core.types.common import MetadataError
 from .extra_methods import MODEL_EXTRA_METHODS
@@ -21,7 +27,11 @@ class BaseMetadataMutation(BaseMutation):
 
     @classmethod
     def __init_subclass_with_meta__(
-        cls, arguments=None, permission_map=[], _meta=None, **kwargs,
+        cls,
+        arguments=None,
+        permission_map=[],
+        _meta=None,
+        **kwargs,
     ):
         if not _meta:
             _meta = MetadataPermissionOptions(cls)
@@ -47,6 +57,19 @@ class BaseMetadataMutation(BaseMutation):
                     "id": ValidationError(
                         f"Couldn't resolve to a item with meta: {object_id}",
                         code=MetadataErrorCode.NOT_FOUND.value,
+                    )
+                }
+            )
+
+    @classmethod
+    def validate_metadata_keys(cls, metadata_list: List[dict]):
+        # raise an error when any of the key is empty
+        if not all([data["key"].strip() for data in metadata_list]):
+            raise ValidationError(
+                {
+                    "input": ValidationError(
+                        "Metadata key cannot be empty.",
+                        code=MetadataErrorCode.REQUIRED.value,
                     )
                 }
             )
@@ -97,6 +120,23 @@ class BaseMetadataMutation(BaseMutation):
     @classmethod
     def success_response(cls, instance):
         """Return a success response."""
+        # Wrap the instance with ChannelContext for models that use it.
+        use_channel_context = any(
+            [
+                isinstance(instance, Model)
+                for Model in [
+                    product_models.Product,
+                    product_models.ProductVariant,
+                    product_models.Collection,
+                    shipping_models.ShippingMethod,
+                    shipping_models.ShippingZone,
+                    menu_models.Menu,
+                    menu_models.MenuItem,
+                ]
+            ]
+        )
+        if use_channel_context:
+            instance = ChannelContext(node=instance, channel_slug=None)
         return cls(**{"item": instance, "errors": []})
 
 
@@ -125,6 +165,7 @@ class UpdateMetadata(BaseMetadataMutation):
         instance = cls.get_instance(info, **data)
         if instance:
             metadata_list = data.pop("input")
+            cls.validate_metadata_keys(metadata_list)
             items = {data.key: data.value for data in metadata_list}
             instance.store_value_in_metadata(items=items)
             instance.save(update_fields=["metadata"])
@@ -177,6 +218,7 @@ class UpdatePrivateMetadata(BaseMetadataMutation):
         instance = cls.get_instance(info, **data)
         if instance:
             metadata_list = data.pop("input")
+            cls.validate_metadata_keys(metadata_list)
             items = {data.key: data.value for data in metadata_list}
             instance.store_value_in_private_metadata(items=items)
             instance.save(update_fields=["private_metadata"])

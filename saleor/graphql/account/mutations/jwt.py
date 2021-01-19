@@ -3,10 +3,8 @@ from typing import Optional
 import graphene
 import jwt
 from django.core.exceptions import ValidationError
-from django.middleware.csrf import (  # type: ignore
-    _compare_masked_tokens,
-    _get_new_csrf_token,
-)
+from django.middleware.csrf import _compare_masked_tokens  # type: ignore
+from django.middleware.csrf import _get_new_csrf_token
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 from graphene.types.generic import GenericScalar
@@ -16,11 +14,13 @@ from ....account.error_codes import AccountErrorCode
 from ....core.jwt import (
     JWT_REFRESH_TOKEN_COOKIE_NAME,
     JWT_REFRESH_TYPE,
+    PERMISSIONS_FIELD,
     create_access_token,
     create_refresh_token,
     get_user_from_payload,
     jwt_decode,
 )
+from ....core.permissions import get_permissions_from_names
 from ...core.mutations import BaseMutation
 from ...core.types.common import AccountError
 from ..types import User
@@ -29,7 +29,7 @@ from ..types import User
 def get_payload(token):
     try:
         payload = jwt_decode(token)
-    except jwt.ExpiredSignature:
+    except jwt.ExpiredSignatureError:
         raise ValidationError(
             "Signature has expired", code=AccountErrorCode.JWT_SIGNATURE_EXPIRED.value
         )
@@ -53,6 +53,9 @@ def get_user(payload):
         raise ValidationError(
             "Invalid token", code=AccountErrorCode.JWT_INVALID_TOKEN.value
         )
+    permissions = payload.get(PERMISSIONS_FIELD)
+    if permissions is not None:
+        user.effective_permissions = get_permissions_from_names(permissions)
     return user
 
 

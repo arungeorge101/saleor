@@ -13,11 +13,14 @@ class BasePermissionEnum(Enum):
 class AccountPermissions(BasePermissionEnum):
     MANAGE_USERS = "account.manage_users"
     MANAGE_STAFF = "account.manage_staff"
-    MANAGE_SERVICE_ACCOUNTS = "app.manage_apps"
 
 
 class AppPermission(BasePermissionEnum):
     MANAGE_APPS = "app.manage_apps"
+
+
+class ChannelPermissions(BasePermissionEnum):
+    MANAGE_CHANNELS = "channel.manage_channels"
 
 
 class DiscountPermissions(BasePermissionEnum):
@@ -48,8 +51,16 @@ class PagePermissions(BasePermissionEnum):
     MANAGE_PAGES = "page.manage_pages"
 
 
+class PageTypePermissions(BasePermissionEnum):
+    MANAGE_PAGE_TYPES_AND_ATTRIBUTES = "page.manage_page_types_and_attributes"
+
+
 class ProductPermissions(BasePermissionEnum):
     MANAGE_PRODUCTS = "product.manage_products"
+
+
+class ProductTypePermissions(BasePermissionEnum):
+    MANAGE_PRODUCT_TYPES_AND_ATTRIBUTES = "product.manage_product_types_and_attributes"
 
 
 class ShippingPermissions(BasePermissionEnum):
@@ -64,13 +75,16 @@ class SitePermissions(BasePermissionEnum):
 PERMISSIONS_ENUMS = [
     AccountPermissions,
     AppPermission,
+    ChannelPermissions,
     DiscountPermissions,
     PluginsPermissions,
     GiftcardPermissions,
     MenuPermissions,
     OrderPermissions,
     PagePermissions,
+    PageTypePermissions,
     ProductPermissions,
+    ProductTypePermissions,
     ShippingPermissions,
     SitePermissions,
     CheckoutPermissions,

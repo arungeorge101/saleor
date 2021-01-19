@@ -2,46 +2,91 @@ from collections import defaultdict
 
 from promise import Promise
 
-from ....core.permissions import ProductPermissions
-from ....product.models import (
+from ....attribute.models import (
     AssignedProductAttribute,
+    AssignedProductAttributeValue,
     AssignedVariantAttribute,
-    Attribute,
+    AssignedVariantAttributeValue,
     AttributeProduct,
-    AttributeValue,
     AttributeVariant,
 )
+from ....core.permissions import ProductPermissions
+from ...attribute.dataloaders import AttributesByAttributeId, AttributeValueByIdLoader
 from ...core.dataloaders import DataLoader
+from ...utils import get_user_or_app_from_context
 from .products import ProductByIdLoader, ProductVariantByIdLoader
 
 
-class AttributeValuesByAttributeIdLoader(DataLoader):
-    context_key = "attributevalues_by_attribute"
+class BaseProductAttributesByProductTypeIdLoader(DataLoader):
+    """Loads product attributes by product type ID."""
+
+    context_key = "product_attributes_by_producttype"
+    model_name = None
 
     def batch_load(self, keys):
-        attribute_values = AttributeValue.objects.filter(attribute_id__in=keys)
-        attribute_to_attributevalues = defaultdict(list)
-        for attribute_value in attribute_values.iterator():
-            attribute_to_attributevalues[attribute_value.attribute_id].append(
-                attribute_value
-            )
-        return [attribute_to_attributevalues[attribute_id] for attribute_id in keys]
+        if not self.model_name:
+            raise ValueError("Provide a model_name for this dataloader.")
+
+        requestor = get_user_or_app_from_context(self.context)
+        if requestor.is_active and requestor.has_perm(
+            ProductPermissions.MANAGE_PRODUCTS
+        ):
+            qs = self.model_name.objects.all()
+        else:
+            qs = self.model_name.objects.filter(attribute__visible_in_storefront=True)
+        product_type_attribute_pairs = qs.filter(product_type_id__in=keys).values_list(
+            "product_type_id", "attribute_id"
+        )
+
+        product_type_to_attributes_map = defaultdict(list)
+        for product_type_id, attr_id in product_type_attribute_pairs:
+            product_type_to_attributes_map[product_type_id].append(attr_id)
+
+        def map_attributes(attributes):
+            attributes_map = {attr.id: attr for attr in attributes}
+            return [
+                [
+                    attributes_map[attr_id]
+                    for attr_id in product_type_to_attributes_map[product_type_id]
+                ]
+                for product_type_id in keys
+            ]
+
+        return (
+            AttributesByAttributeId(self.context)
+            .load_many(set(attr_id for _, attr_id in product_type_attribute_pairs))
+            .then(map_attributes)
+        )
 
 
-class AttributesByAttributeId(DataLoader):
-    context_key = "attributes_by_id"
+class ProductAttributesByProductTypeIdLoader(
+    BaseProductAttributesByProductTypeIdLoader
+):
+    """Loads product attributes by product type ID."""
 
-    def batch_load(self, keys):
-        attributes = Attribute.objects.in_bulk(keys)
-        return [attributes.get(key) for key in keys]
+    context_key = "product_attributes_by_producttype"
+    model_name = AttributeProduct
+
+
+class VariantAttributesByProductTypeIdLoader(
+    BaseProductAttributesByProductTypeIdLoader
+):
+    """Loads variant attributes by product type ID."""
+
+    context_key = "variant_attributes_by_producttype"
+    model_name = AttributeVariant
 
 
 class AttributeProductsByProductTypeIdLoader(DataLoader):
+    """Loads AttributeProduct objects by product type ID."""
+
     context_key = "attributeproducts_by_producttype"
 
     def batch_load(self, keys):
-        user = self.user
-        if user.is_active and user.has_perm(ProductPermissions.MANAGE_PRODUCTS):
+        requestor = get_user_or_app_from_context(self.context)
+        if requestor.is_active and requestor.has_perm(
+            ProductPermissions.MANAGE_PRODUCTS
+        ):
             qs = AttributeProduct.objects.all()
         else:
             qs = AttributeProduct.objects.filter(attribute__visible_in_storefront=True)
@@ -58,8 +103,10 @@ class AttributeVariantsByProductTypeIdLoader(DataLoader):
     context_key = "attributevariants_by_producttype"
 
     def batch_load(self, keys):
-        user = self.user
-        if user.is_active and user.has_perm(ProductPermissions.MANAGE_PRODUCTS):
+        requestor = get_user_or_app_from_context(self.context)
+        if requestor.is_active and requestor.has_perm(
+            ProductPermissions.MANAGE_PRODUCTS
+        ):
             qs = AttributeVariant.objects.all()
         else:
             qs = AttributeVariant.objects.filter(attribute__visible_in_storefront=True)
@@ -76,8 +123,10 @@ class AssignedProductAttributesByProductIdLoader(DataLoader):
     context_key = "assignedproductattributes_by_product"
 
     def batch_load(self, keys):
-        user = self.user
-        if user.is_active and user.has_perm(ProductPermissions.MANAGE_PRODUCTS):
+        requestor = get_user_or_app_from_context(self.context)
+        if requestor.is_active and requestor.has_perm(
+            ProductPermissions.MANAGE_PRODUCTS
+        ):
             qs = AssignedProductAttribute.objects.all()
         else:
             qs = AssignedProductAttribute.objects.filter(
@@ -96,8 +145,10 @@ class AssignedVariantAttributesByProductVariantId(DataLoader):
     context_key = "assignedvariantattributes_by_productvariant"
 
     def batch_load(self, keys):
-        user = self.user
-        if user.is_active and user.has_perm(ProductPermissions.MANAGE_PRODUCTS):
+        requestor = get_user_or_app_from_context(self.context)
+        if requestor.is_active and requestor.has_perm(
+            ProductPermissions.MANAGE_PRODUCTS
+        ):
             qs = AssignedVariantAttribute.objects.all()
         else:
             qs = AssignedVariantAttribute.objects.filter(
@@ -114,35 +165,23 @@ class AssignedVariantAttributesByProductVariantId(DataLoader):
         return [variant_attributes[variant_id] for variant_id in keys]
 
 
-class AttributeValueByIdLoader(DataLoader):
-    context_key = "attributevalue_by_id"
-
-    def batch_load(self, keys):
-        attribute_values = AttributeValue.objects.in_bulk(keys)
-        return [attribute_values.get(attribute_value_id) for attribute_value_id in keys]
-
-
 class AttributeValuesByAssignedProductAttributeIdLoader(DataLoader):
     context_key = "attributevalues_by_assignedproductattribute"
 
     def batch_load(self, keys):
-        AttributeAssignment = AttributeValue.assignedproductattribute_set.through
-        attribute_values = AttributeAssignment.objects.filter(
-            assignedproductattribute_id__in=keys
+        attribute_values = AssignedProductAttributeValue.objects.filter(
+            assignment_id__in=keys
         )
-        value_ids = [a.attributevalue_id for a in attribute_values]
+        value_ids = [a.value_id for a in attribute_values]
 
         def map_assignment_to_values(values):
             value_map = dict(zip(value_ids, values))
             assigned_product_map = defaultdict(list)
             for attribute_value in attribute_values:
-                assigned_product_map[
-                    attribute_value.assignedproductattribute_id
-                ].append(value_map.get(attribute_value.attributevalue_id))
-            return [
-                sorted(assigned_product_map[key], key=lambda v: (v.sort_order, v.id))
-                for key in keys
-            ]
+                assigned_product_map[attribute_value.assignment_id].append(
+                    value_map.get(attribute_value.value_id)
+                )
+            return [assigned_product_map[key] for key in keys]
 
         return (
             AttributeValueByIdLoader(self.context)
@@ -155,23 +194,19 @@ class AttributeValuesByAssignedVariantAttributeIdLoader(DataLoader):
     context_key = "attributevalues_by_assignedvariantattribute"
 
     def batch_load(self, keys):
-        AttributeAssignment = AttributeValue.assignedvariantattribute_set.through
-        attribute_values = AttributeAssignment.objects.filter(
-            assignedvariantattribute_id__in=keys
+        attribute_values = AssignedVariantAttributeValue.objects.filter(
+            assignment_id__in=keys
         )
-        value_ids = [a.attributevalue_id for a in attribute_values]
+        value_ids = [a.value_id for a in attribute_values]
 
         def map_assignment_to_values(values):
             value_map = dict(zip(value_ids, values))
             assigned_variant_map = defaultdict(list)
             for attribute_value in attribute_values:
-                assigned_variant_map[
-                    attribute_value.assignedvariantattribute_id
-                ].append(value_map.get(attribute_value.attributevalue_id))
-            return [
-                sorted(assigned_variant_map[key], key=lambda v: (v.sort_order, v.id))
-                for key in keys
-            ]
+                assigned_variant_map[attribute_value.assignment_id].append(
+                    value_map.get(attribute_value.value_id)
+                )
+            return [assigned_variant_map[key] for key in keys]
 
         return (
             AttributeValueByIdLoader(self.context)
@@ -184,7 +219,7 @@ class SelectedAttributesByProductIdLoader(DataLoader):
     context_key = "selectedattributes_by_product"
 
     def batch_load(self, keys):
-        def with_products_and_assigned_attributed(result):
+        def with_products_and_assigned_attributes(result):
             products, product_attributes = result
             assigned_product_attribute_ids = [
                 a.id for attrs in product_attributes for a in attrs
@@ -256,7 +291,7 @@ class SelectedAttributesByProductIdLoader(DataLoader):
         ).load_many(keys)
 
         return Promise.all([products, assigned_attributes]).then(
-            with_products_and_assigned_attributed
+            with_products_and_assigned_attributes
         )
 
 
